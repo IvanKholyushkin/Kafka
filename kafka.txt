@@ -42,5 +42,82 @@
 Пиковое значение TPS (запрос/секунда): 15
 Пиковое значение TPS (запрос/сутки): 1 296 000
 Количество партиций: 10
- 
+
+
+import json
+from confluent_kafka import Consumer, KafkaError, OFFSET_BEGINNING
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.json_schema import JSONDeserializer
+from threading import Thread
+
+# Конфигурация Kafka и Schema Registry
+kafka_config = {
+    'bootstrap.servers': 'your_kafka_broker',  # Укажите адрес вашего Kafka брокера
+    'group.id': 'CYCPOS.ITSUPPORTPINGDATAEVENT.V1',  # Имя группы консумеров
+    'auto.offset.reset': 'earliest',  # Начинать с самого начала, если офсетов еще нет
+    'enable.auto.commit': False  # Отключаем авто-коммит офсетов
+}
+
+schema_registry_config = {
+    'url': 'your_schema_registry_url'  # Укажите адрес вашего Schema Registry
+}
+
+topic = 'CYCPOS.ITSUPPORTPINGDATAEVENT.V1'
+
+# Инициализация клиента Schema Registry
+schema_registry_client = SchemaRegistryClient(schema_registry_config)
+
+# Получение схемы из Schema Registry
+schema_id = schema_registry_client.get_latest_version(f'{topic}-value').schema_id
+schema = schema_registry_client.get_schema(schema_id).schema_str
+
+# Десериализатор для JSON Schema
+json_deserializer = JSONDeserializer(schema)
+
+
+def consume_partition(partition):
+    consumer = Consumer(kafka_config)
+
+    # Назначаем конкретную партицию консумеру
+    consumer.assign([{'topic': topic, 'partition': partition, 'offset': OFFSET_BEGINNING}])
+
+    try:
+        while True:
+            msg = consumer.poll(1.0)  # Ожидание сообщения (1 секунда тайм-аут)
+
+            if msg is None:
+                continue
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    continue
+                else:
+                    print(f'Error: {msg.error()}')
+                    break
+
+            # Получение и десериализация сообщения
+            message_value = msg.value().decode('utf-8')
+            try:
+                data = json_deserializer(message_value, None)
+                print(f'Partition {partition} - Received message: {data}')
+                # Коммит офсета после успешной обработки сообщения
+                consumer.commit()
+            except Exception as e:
+                print(f'Partition {partition} - Failed to deserialize or validate message: {e}')
+
+    finally:
+        # Закрытие консюмера при завершении
+        consumer.close()
+
+
+# Создание и запуск потоков для каждой партиции
+threads = []
+for i in range(10):
+    thread = Thread(target=consume_partition, args=(i,))
+    thread.start()
+    threads.append(thread)
+
+# Ожидание завершения всех потоков
+for thread in threads:
+    thread.join()
+
  
