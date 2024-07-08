@@ -43,12 +43,14 @@
 Пиковое значение TPS (запрос/сутки): 1 296 000
 Количество партиций: 10
 
+pip install confluent-kafka psycopg2-binary
 
 import json
 from confluent_kafka import Consumer, KafkaError, OFFSET_BEGINNING
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.json_schema import JSONDeserializer
 from threading import Thread
+import psycopg2
 
 # Конфигурация Kafka и Schema Registry
 kafka_config = {
@@ -74,6 +76,31 @@ schema = schema_registry_client.get_schema(schema_id).schema_str
 # Десериализатор для JSON Schema
 json_deserializer = JSONDeserializer(schema)
 
+# Настройки подключения к базе данных PostgreSQL
+db_config = {
+    'dbname': 'your_dbname',
+    'user': 'your_dbuser',
+    'password': 'your_dbpassword',
+    'host': 'your_dbhost',
+    'port': 'your_dbport'
+}
+
+def save_to_db(data):
+    try:
+        connection = psycopg2.connect(**db_config)
+        cursor = connection.cursor()
+
+        insert_query = """
+        INSERT INTO your_table_name (tid, bin, date, event)
+        VALUES (%s, %s, %s, %s)
+        """
+        cursor.execute(insert_query, (data['DATA']['tid'], data['DATA']['bin'], data['DATA']['date'], data['DATA'].get('event')))
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+    except Exception as e:
+        print(f"Failed to save data to DB: {e}")
 
 def consume_partition(partition):
     consumer = Consumer(kafka_config)
@@ -99,6 +126,7 @@ def consume_partition(partition):
             try:
                 data = json_deserializer(message_value, None)
                 print(f'Partition {partition} - Received message: {data}')
+                save_to_db(data)
                 # Коммит офсета после успешной обработки сообщения
                 consumer.commit()
             except Exception as e:
@@ -119,5 +147,3 @@ for i in range(10):
 # Ожидание завершения всех потоков
 for thread in threads:
     thread.join()
-
- 
