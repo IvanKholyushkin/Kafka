@@ -1,0 +1,46 @@
+схема: 
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "type": "object",
+    "properties": {
+        "DATA": {
+            "type": "object",
+            "properties": {
+                "tid": {
+                    "type": "string"
+                },
+                "bin": {
+                    "type": "string"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "event": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "tid",
+                "bin",
+                "date"
+            ]
+        }
+    },
+    "required": [
+        "DATA"
+    ]
+}    
+
+
+Название события: ITSUPPORTPINGDATA
+Имя потока: CYCPOS.ITSUPPORTPINGDATAEVENT.V1
+Источник: CYCPOS
+Домен: K2_IAZCommon
+Форман схемы: JSON
+Время хранения данных в потоке (минуты): 200
+Максимальный размер пакета (Килобайты): 100
+Пиковое значение TPS (запрос/секунда): 15
+Пиковое значение TPS (запрос/сутки): 1 296 000
+Количество партиций: 10
+ 
+ 
