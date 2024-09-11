@@ -284,3 +284,163 @@ except KeyboardInterrupt:
 finally:
     consumer.close()
     logging.info('Соединение с Kafka закрыто.')
+______________________________________________________________________________________________
+
+from kafka import KafkaConsumer
+from kafka.errors import KafkaError
+import logging
+import base64
+import json
+import csv
+import os
+
+# Логирование
+logging.basicConfig(level=logging.INFO)
+
+# Конфигурация SSL для Kafka
+ssl_certfile = '/home/bill_dev/test/cert/New_cert/chain_pem.pem'
+ssl_pr = '/home/bill_dev/test/cert/New_cert/privkey.pem'
+ssl_pb = '/home/bill_dev/test/cert/New_cert/new_published.pem'
+
+# Конфигурация Kafka
+group_id = 'Pos_Ping_Consumer'
+topic = 'CYCPOS.ITSUPPORTPINGDATAEVENT'
+servers = 'tkli-mvp1028.vm.mos.cloud.sbrf.ru:9093, tkli-mvp1029.vm.mos.cloud.sbrf.ru:9093, tkli-mvp1034.vm.mos.cloud.sbrf.ru:9093'
+
+# Парсер данных PING_DATA
+def parse_data(data):
+    index = 0
+    result = {}
+    while index < len(data):
+        tag_id = data[index]
+        index += 1
+        length = data[index]
+        index += 1
+        value = data[index:index + length]
+        index += length
+        result[tag_id] = value
+    return result
+
+# Интерпретатор тегов
+def interpret_tags(decoder_str, ping_date):
+    info = {
+        'TAGM_IMEI': '',
+        'TAGM_ICCID': '',
+        'TAGM_TID': '',
+        'TAGM_MODEL': '',
+        'TAGM_SERIAL': '',
+        'PING_DATE': ping_date  # Дата PING
+    }
+    
+    for tag, value in decoder_str.items():
+        if tag == 0xD1:
+            info['TAGM_IMEI'] = value.decode('utf-8')
+        elif tag == 0xD2:
+            info['TAGM_ICCID'] = value.decode('utf-8')
+        elif tag == 0xC1:
+            info['TAGM_TID'] = value.decode('utf-8')
+        elif tag == 0xC4:
+            info['TAGM_MODEL'] = value.decode('utf-8')
+        elif tag == 0xC5:
+            info['TAGM_SERIAL'] = value.decode('utf-8')
+    
+    return info
+
+# Функция для добавления данных в CSV
+def append_to_csv(file_name, data):
+    file_exists = os.path.isfile(file_name)
+    with open(file_name, mode='a', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=data.keys())
+        if not file_exists:
+            writer.writeheader()  # Записываем заголовки только один раз, если файла нет
+        writer.writerow(data)
+
+# Консумер Kafka
+consumer = KafkaConsumer(
+    topic,
+    auto_offset_reset='earliest',
+    api_version=(2, 5, 0),
+    group_id=group_id,
+    bootstrap_servers=servers.split(', '),
+    enable_auto_commit=True,
+    security_protocol='SSL',
+    ssl_check_hostname=False,
+    ssl_certfile=ssl_pb,
+    ssl_cafile=ssl_certfile,
+    ssl_keyfile=ssl_pr,
+    max_poll_records=10,
+    fetch_max_wait_ms=30 * 1000,
+    max_poll_interval_ms=4601000,
+    session_timeout_ms=60000,
+    request_timeout_ms=6601000,
+    connections_max_idle_ms=7601000,
+    heartbeat_interval_ms=3000
+)
+
+try:
+    logging.info("Начало чтения сообщений")
+    for message in consumer:
+        try:
+            # Декодируем JSON-сообщение
+            raw_data = message.value.decode('utf-8')
+            logging.info(f"Получено сообщение: {raw_data}")
+            
+            # Проверяем, является ли сообщение валидным JSON
+            try:
+                message_json = json.loads(raw_data)
+            except json.JSONDecodeError:
+                logging.warning(f"Сообщение не является валидным JSON и будет проигнорировано: {raw_data}")
+                continue  # Игнорируем сообщение
+
+            # Проверяем наличие необходимых полей в сообщении
+            if "DATA" not in message_json or not isinstance(message_json["DATA"], list):
+                logging.warning(f"Сообщение не содержит корректное поле 'DATA' и будет проигнорировано: {raw_data}")
+                continue  # Игнорируем сообщение
+            
+            data_entries = message_json["DATA"]  # Достаем массив с данными
+            
+            # Обрабатываем каждый элемент массива отдельно
+            for entry in data_entries:
+                if "TERMINAL_ID" not in entry or "PING_DATA" not in entry or "PING_DATE" not in entry:
+                    logging.warning(f"Элемент не содержит необходимых полей и будет проигнорирован: {entry}")
+                    continue  # Игнорируем элемент
+                
+                terminal_id = entry.get("TERMINAL_ID", "Неизвестный ID")
+                ping_data_encoded = entry["PING_DATA"]
+                ping_date = entry.get("PING_DATE", "Дата не указана")  # Получаем PING_DATE
+                
+                # Декодируем Base64
+                try:
+                    decoded_bytes = base64.b64decode(ping_data_encoded)
+                except base64.binascii.Error:
+                    logging.warning(f"Ошибка декодирования Base64 для TERMINAL_ID {terminal_id}. Сообщение проигнорировано.")
+                    continue  # Игнорируем сообщение
+                
+                logging.info(f"Декодированные байты для TERMINAL_ID {terminal_id}: {decoded_bytes}")
+
+                # Конвертация в hex, если это необходимо
+                try:
+                    decoded_bytes_hex = bytes.fromhex(decoded_bytes.decode('ascii', errors='ignore'))
+                except ValueError:
+                    logging.warning(f"Ошибка конвертации байтов в HEX для TERMINAL_ID {terminal_id}. Сообщение проигнорировано.")
+                    continue  # Игнорируем сообщение
+                
+                # Парсинг данных
+                ping_data = parse_data(decoded_bytes_hex)
+                parsed_info = interpret_tags(ping_data, ping_date)  # Передаем PING_DATE
+
+                # Записываем данные в CSV
+                append_to_csv('ping_data.csv', parsed_info)
+                logging.info(f"Данные записаны в CSV для TERMINAL_ID {terminal_id}")
+
+        except Exception as e:
+            logging.error(f"Ошибка обработки сообщения: {e}")
+
+except KafkaError as e:
+    logging.error(f"Ошибка Kafka: {e}")
+except KeyboardInterrupt:
+    logging.info("Остановка по запросу пользователя.")
+finally:
+    consumer.close()
+    logging.info('Соединение с Kafka закрыто.')
+
